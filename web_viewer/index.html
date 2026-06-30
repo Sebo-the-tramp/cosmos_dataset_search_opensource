@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Cosmos Video Search</title>
+    <link rel="stylesheet" href="styles.css?v=20260630i">
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="panel input-panel">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <div>
+            <p class="eyebrow">Cosmos</p>
+            <h1>Video Search</h1>
+          </div>
+        </div>
+
+        <form id="search-form" class="controls">
+          <label class="field">
+            <span>Word Query</span>
+            <input id="query" name="query" type="text" value="pickup" autocomplete="off" required>
+          </label>
+
+          <label class="field">
+            <span>Number of Results</span>
+            <input id="top-k" name="top-k" type="number" min="1" step="1" value="5" required>
+          </label>
+
+          <div class="actions">
+            <button class="button ghost" type="reset">Reset</button>
+            <button class="button primary" type="submit">Run</button>
+          </div>
+        </form>
+
+        <form id="video-search-form" class="controls video-controls">
+          <label class="field">
+            <span>Video Query</span>
+            <input id="video-query" name="video-query" type="file" accept="video/*" required>
+          </label>
+
+          <div class="actions">
+            <button class="button primary" type="submit">Run video</button>
+          </div>
+        </form>
+
+        <section class="history-panel">
+          <p class="eyebrow">History</p>
+          <div id="history" class="history-list"></div>
+        </section>
+      </aside>
+
+      <section class="panel output-panel">
+        <header class="output-header">
+          <div>
+            <p class="eyebrow">Output</p>
+            <h2>Search Results</h2>
+          </div>
+          <div class="tools">
+            <button id="download-results" class="button ghost" type="button" disabled>Download data</button>
+          </div>
+        </header>
+
+        <div id="summary" class="summary">Ready to run the stroller query.</div>
+        <div id="download-progress" class="download-progress" hidden>
+          <div class="progress-track">
+            <div id="download-progress-bar" class="progress-bar"></div>
+          </div>
+          <div id="download-progress-text" class="progress-text"></div>
+        </div>
+        <div id="results" class="results" aria-live="polite"></div>
+      </section>
+    </main>
+
+    <template id="result-card">
+      <article class="result-card">
+        <div class="thumbnail">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+        <div class="result-meta">
+          <p class="chunk"></p>
+          <p class="video-path"></p>
+          <p class="result-id"></p>
+        </div>
+        <footer>
+          <div class="rating">
+            <button type="button" aria-label="Like">+</button>
+            <button type="button" aria-label="Dislike">-</button>
+          </div>
+          <span class="score"></span>
+          <button class="more" type="button" aria-label="Open options">...</button>
+        </footer>
+      </article>
+    </template>
+
+    <script src="app.js?v=20260630i"></script>
+  </body>
+</html>

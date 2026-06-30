@@ -29,6 +29,8 @@ buffered_pipeline.224/data/
 buffered_pipeline/test_embeddings/videos/
 buffered_pipeline/test_embeddings/videos_trimmed/
 buffered_pipeline/test_embeddings/embeddings/
+buffered_pipeline/test_embeddings/
+
 download_video/data/
 download_video/*_paths.json
 
@@ -43,3 +45,5 @@ database/volumes/
 # Codex/local workspace metadata
 .agents/
 .codex/
+
+agents.md

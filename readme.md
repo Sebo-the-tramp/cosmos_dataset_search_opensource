@@ -2,7 +2,9 @@
 
 Local text-to-video search over NVIDIA PhysicalAI autonomous-driving clips using Cosmos video embeddings, Milvus vector search, a Flask API, and a static web viewer.
 
-Architecture sketch: `architecture.excalidraw`.
+Architecture:
+
+![Cosmos CDS architecture](architecture.png)
 
 ```text
 Hugging Face zips -> mp4 extraction -> Cosmos video embeddings -> Parquet -> Milvus -> Flask API -> web viewer
@@ -12,7 +14,7 @@ Hugging Face zips -> mp4 extraction -> Cosmos video embeddings -> Parquet -> Mil
 
 This is publishable as a research/internal pipeline after generated data is removed from the repository. It is not a packaged product yet: most scripts intentionally use hardcoded constants at the top of each file, absolute local paths, and fail-fast assertions.
 
-Before a public release, add a license and re-check the licenses/terms for the NVIDIA dataset and Cosmos model.
+The repository code is licensed under Apache-2.0. NVIDIA model weights, NVIDIA dataset files, videos, generated embeddings, and Milvus volumes containing generated embeddings are not redistributed by this project.
 
 ## Requirements
 
@@ -69,7 +71,6 @@ The backend currently uses `LOCAL_FILES_ONLY = True`, so `nvidia/Cosmos-Embed1-4
 | `backend/app.py` | Flask API that embeds text queries and searches Milvus. |
 | `web_viewer/` | Static UI calling `http://127.0.0.1:5000/search`; can download the returned video-path list as JSON. |
 | `backend/download_video_list.py` | Downloads result paths and videos into the shared dataset folder. |
-| `download_video/download_video_list.py` | Thin wrapper for local `*_paths.json` files. |
 
 ## Generated Data
 
@@ -83,6 +84,8 @@ These paths are generated and should not be committed:
 | `buffered_pipeline/test_embeddings/videos*/` | Local test clips. |
 | `buffered_pipeline/test_embeddings/embeddings/` | Local test embedding outputs. |
 | `/data0/sebastian.cavada/datasets/cosmos-cds/data/` | Downloaded query JSON files and videos grouped by query. |
+
+Generated embeddings from gated or restricted datasets should stay local unless the dataset owner explicitly permits redistribution.
 
 ## Build Embeddings
 
@@ -209,3 +212,7 @@ python3 -m http.server 8000
 - `database/standalone_embed.sh` uses `sudo docker`.
 - `database/test_curl.sh` is an old direct-Milvus REST example and is not the main search test path.
 - The repository does not yet include a `pyproject.toml` or pinned lockfile.
+
+## License
+
+The repository code and documentation are licensed under the Apache License, Version 2.0. See `LICENSE` and `NOTICE.md`.
