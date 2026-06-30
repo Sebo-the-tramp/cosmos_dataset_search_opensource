@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Environments
+.venv/
+venv/
+env/
+
+# Local secrets/config
+.env
+.env.*
+
+# Runtime outputs
+*.log
+*.pid
+*.tmp
+*.parquet
+*.zip
+*.mp4
+
+# Project generated data
+buffered_pipeline/data/
+buffered_pipeline.224/data/
+buffered_pipeline/test_embeddings/videos/
+buffered_pipeline/test_embeddings/videos_trimmed/
+buffered_pipeline/test_embeddings/embeddings/
+download_video/data/
+download_video/*_paths.json
+
+# Milvus local volume
+database/volumes/
+
+# Local editor/system files
+.DS_Store
+.idea/
+.vscode/
+
+# Codex/local workspace metadata
+.agents/
+.codex/
