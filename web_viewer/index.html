@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Cosmos Video Search</title>
-    <link rel="stylesheet" href="styles.css?v=20260630i">
+    <link rel="stylesheet" href="styles.css?v=20260701d">
   </head>
   <body>
     <main class="shell">
@@ -12,20 +12,30 @@
         <div class="brand">
           <span class="brand-mark"></span>
           <div>
-            <p class="eyebrow">Cosmos</p>
-            <h1>Video Search</h1>
+            <p class="eyebrow">Open Source</p>
+            <h1>Cosmos Video Search</h1>
           </div>
         </div>
 
         <form id="search-form" class="controls">
           <label class="field">
-            <span>Word Query</span>
+            <span>Concept Query</span>
             <input id="query" name="query" type="text" value="pickup" autocomplete="off" required>
           </label>
 
           <label class="field">
             <span>Number of Results</span>
             <input id="top-k" name="top-k" type="number" min="1" step="1" value="5" required>
+          </label>
+
+          <label class="field metadata-filter">
+            <span>Metadata Filter</span>
+            <textarea id="metadata-filter" name="metadata-filter" rows="12">
+{
+  "field": "country",
+  "operator": "in",
+  "value": ["Italy", "France"]
+}</textarea>
           </label>
 
           <div class="actions">
@@ -76,6 +86,7 @@
     <template id="result-card">
       <article class="result-card">
         <div class="thumbnail">
+          <button class="options-button" type="button" aria-label="Options" aria-expanded="false">...</button>
           <span></span>
           <span></span>
           <span></span>
@@ -84,18 +95,15 @@
           <p class="chunk"></p>
           <p class="video-path"></p>
           <p class="result-id"></p>
+          <pre class="metadata" hidden></pre>
         </div>
         <footer>
-          <div class="rating">
-            <button type="button" aria-label="Like">+</button>
-            <button type="button" aria-label="Dislike">-</button>
-          </div>
           <span class="score"></span>
-          <button class="more" type="button" aria-label="Open options">...</button>
+          <button class="copy-path" type="button">Copy path</button>
         </footer>
       </article>
     </template>
 
-    <script src="app.js?v=20260630i"></script>
+    <script src="app.js?v=20260701d"></script>
   </body>
 </html>

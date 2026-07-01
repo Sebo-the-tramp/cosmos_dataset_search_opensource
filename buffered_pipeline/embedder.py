@@ -106,6 +106,38 @@ def write_rows(writer: pq.ParquetWriter, rows: list[dict[str, Any]]) -> None:
     writer.write_table(rows_to_table(rows))
 
 
+def embedding_rows(video_paths: list[Path], embeddings: list[list[float]]) -> list[dict[str, Any]]:
+    return [
+        {"video_path": str(video_path), "chunk": video_path.parent.name, "embedding": embedding}
+        for video_path, embedding in zip(video_paths, embeddings, strict=True)
+    ]
+
+
+def write_video_paths(
+    model: AutoModel,
+    processor: AutoProcessor,
+    writer: pq.ParquetWriter,
+    video_paths: list[Path],
+    device: str,
+    desc: str | None = None,
+) -> int:
+    batches = [video_paths[start : start + BATCH_SIZE] for start in range(0, len(video_paths), BATCH_SIZE)]
+    if not batches:
+        return 0
+
+    written = 0
+    iterator = enumerate(tqdm(batches, desc=desc, unit="batch")) if desc else enumerate(batches)
+    with ThreadPoolExecutor(max_workers=DECODE_WORKERS) as decode_pool:
+        futures = submit_videos(batches[0], decode_pool)
+        for batch_idx, batch_paths in iterator:
+            next_futures = submit_videos(batches[batch_idx + 1], decode_pool) if batch_idx + 1 < len(batches) else None
+            write_rows(writer, embedding_rows(batch_paths, embed_videos(model, processor, collect_videos(futures), device)))
+            written += len(batch_paths)
+            futures = next_futures
+
+    return written
+
+
 def embed_batch(
     model: AutoModel,
     processor: AutoProcessor,
@@ -146,37 +178,17 @@ def embed_video_paths(
 
     processor = AutoProcessor.from_pretrained(MODEL_NAME, trust_remote_code=True)
     model = AutoModel.from_pretrained(MODEL_NAME, trust_remote_code=True).to(device, dtype=DTYPE).eval()
-    batches = [video_paths[start : start + BATCH_SIZE] for start in range(0, len(video_paths), BATCH_SIZE)]
-    saved = 0
 
-    if not batches:
+    if not video_paths:
         save_embeddings(rows, output_path)
         return {"videos": len(rows), "processed_videos": 0, "output_path": str(output_path), "device": device}
 
     with pq.ParquetWriter(output_path, SCHEMA) as writer:
         if rows:
             write_rows(writer, rows)
-        with ThreadPoolExecutor(max_workers=DECODE_WORKERS) as decode_pool:
-            futures = submit_videos(batches[0], decode_pool)
-            for batch_idx, batch_paths in enumerate(tqdm(batches, desc=desc, unit="batch")):
-                next_futures = (
-                    submit_videos(batches[batch_idx + 1], decode_pool) if batch_idx + 1 < len(batches) else None
-                )
-                embeddings = embed_videos(model, processor, collect_videos(futures), device)
-                batch_rows = [
-                    {
-                        "video_path": str(video_path),
-                        "chunk": video_path.parent.name,
-                        "embedding": embedding,
-                    }
-                    for video_path, embedding in zip(batch_paths, embeddings, strict=True)
-                ]
-                write_rows(writer, batch_rows)
-                rows.extend(batch_rows)
-                saved = len(rows)
-                futures = next_futures
+        written = write_video_paths(model, processor, writer, video_paths, device, desc)
 
-    return {"videos": len(rows), "processed_videos": len(video_paths), "output_path": str(output_path), "device": device}
+    return {"videos": len(rows) + written, "processed_videos": len(video_paths), "output_path": str(output_path), "device": device}
 
 
 def main() -> None:

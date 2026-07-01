@@ -161,14 +161,9 @@ def main() -> None:
             save_processed_metadata(records)
             break
 
-        try:
-            records[item["zip"]] = record(item, "processing")
-            save_processed_metadata(records)
-            enough_space = process_zip(item, records)
-        except Exception as error:
-            records[item["zip"]] = record(item, "error", str(error))
-            save_processed_metadata(records)
-            enough_space = has_space(0)
+        records[item["zip"]] = record(item, "processing")
+        save_processed_metadata(records)
+        enough_space = process_zip(item, records)
 
         if not enough_space:
             break

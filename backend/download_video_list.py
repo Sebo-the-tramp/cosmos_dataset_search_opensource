@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 
 DATA_DIR = Path("/data0/sebastian.cavada/datasets/cosmos-cds/data")
+CLIP_DIR = DATA_DIR / "clips"
 PATHS_SUFFIX = "_paths.json"
 REQUEST_ENV = "COSMOS_CDS_DOWNLOAD_REQUEST"
 PROGRESS_ENV = "COSMOS_CDS_DOWNLOAD_PROGRESS"
@@ -47,6 +48,10 @@ def save_paths_json(query_name: str, paths: list[str], output_dir: Path, overwri
         with open(json_path, "w") as f:
             json.dump(paths, f, indent=2)
     return json_path
+
+
+def clip_path(clip_id: str) -> Path:
+    return CLIP_DIR / f"{clip_id}.mp4"
 
 
 def video_codec(path: Path) -> str:
@@ -119,7 +124,9 @@ def download_query(word: str, paths: list[str], overwrite: bool = False) -> dict
     assert paths, "No video paths provided"
     query_name = query_name_from_word(word)
     output_dir = DATA_DIR / query_name
+    assert output_dir != CLIP_DIR
     output_dir.mkdir(parents=True, exist_ok=True)
+    CLIP_DIR.mkdir(parents=True, exist_ok=True)
     json_path = save_paths_json(query_name, paths, output_dir, overwrite)
     progress_path = Path(os.environ[PROGRESS_ENV]) if PROGRESS_ENV in os.environ else None
     seen = set()
@@ -144,8 +151,7 @@ def download_query(word: str, paths: list[str], overwrite: bool = False) -> dict
             )
             continue
         seen.add(clip_id)
-        output_path = output_dir / f"{clip_id}.mp4"
-        if write_clip_video(clip_id, output_path, overwrite):
+        if write_clip_video(clip_id, clip_path(clip_id), overwrite):
             written += 1
         else:
             skipped += 1
@@ -157,7 +163,9 @@ def download_query(word: str, paths: list[str], overwrite: bool = False) -> dict
 
     result = {
         "query_name": query_name,
-        "output_dir": str(output_dir),
+        "query_dir": str(output_dir),
+        "clip_dir": str(CLIP_DIR),
+        "output_dir": str(CLIP_DIR),
         "paths_json": str(json_path),
         "video_count": len(seen),
         "written": written,

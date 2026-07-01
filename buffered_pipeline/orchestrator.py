@@ -66,41 +66,6 @@ def shard_videos(videos: list[Path]) -> list[list[Path]]:
     return [videos[idx::len(GPU_IDS)] for idx in range(len(GPU_IDS))]
 
 
-def batch_rows(video_paths: list[Path], embeddings: list[list[float]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "video_path": str(video_path),
-            "chunk": video_path.parent.name,
-            "embedding": embedding,
-        }
-        for video_path, embedding in zip(video_paths, embeddings, strict=True)
-    ]
-
-
-def write_video_paths(
-    model: AutoModel,
-    processor: AutoProcessor,
-    writer: pq.ParquetWriter,
-    video_paths: list[Path],
-    device: str,
-) -> int:
-    batches = [video_paths[start : start + embedder.BATCH_SIZE] for start in range(0, len(video_paths), embedder.BATCH_SIZE)]
-    if not batches:
-        return 0
-
-    written = 0
-    with ThreadPoolExecutor(max_workers=embedder.DECODE_WORKERS) as decode_pool:
-        futures = embedder.submit_videos(batches[0], decode_pool)
-        for batch_idx, paths in enumerate(batches):
-            next_futures = embedder.submit_videos(batches[batch_idx + 1], decode_pool) if batch_idx + 1 < len(batches) else None
-            embeddings = embedder.embed_videos(model, processor, embedder.collect_videos(futures), device)
-            embedder.write_rows(writer, batch_rows(paths, embeddings))
-            written += len(paths)
-            futures = next_futures
-
-    return written
-
-
 def gpu_worker(device_id: int, task_queue: mp.Queue, result_queue: mp.Queue, output_path: Path) -> None:
     device = f"cuda:{device_id}"
     torch.cuda.set_device(device_id)
@@ -116,7 +81,7 @@ def gpu_worker(device_id: int, task_queue: mp.Queue, result_queue: mp.Queue, out
 
             video_paths = [Path(x) for x in task["videos"]]
             start = time.perf_counter()
-            written = write_video_paths(model, processor, writer, video_paths, device)
+            written = embedder.write_video_paths(model, processor, writer, video_paths, device)
             seconds = time.perf_counter() - start
             result_queue.put(
                 {

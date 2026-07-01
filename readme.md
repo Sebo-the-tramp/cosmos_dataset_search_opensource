@@ -1,18 +1,20 @@
 # Cosmos CDS
 
-Local text-to-video search over NVIDIA PhysicalAI autonomous-driving clips using Cosmos video embeddings, Milvus vector search, a Flask API, and a static web viewer.
+Local Cosmos Dataset Search-style video retrieval over NVIDIA PhysicalAI autonomous-driving clips.
+
+This repo uses `nvidia/Cosmos-Embed1-448p` to embed videos and text, stores video embeddings in Milvus, serves search through a Flask backend, and serves the browser UI from the same backend.
 
 Architecture:
 
 ![Cosmos CDS architecture](architecture.png)
 
 ```text
-Hugging Face zips -> mp4 extraction -> Cosmos video embeddings -> Parquet -> Milvus -> Flask API -> web viewer
+Hugging Face zips -> mp4 extraction -> Cosmos video embeddings -> Parquet -> Milvus -> Flask backend + viewer
 ```
 
-## Repository Status
+## Status
 
-This is publishable as a research/internal pipeline after generated data is removed from the repository. It is not a packaged product yet: most scripts intentionally use hardcoded constants at the top of each file, absolute local paths, and fail-fast assertions.
+This is a research/internal pipeline with hardcoded constants at the top of the scripts. It is intentionally simple and fail-fast, not a packaged product.
 
 The repository code is licensed under Apache-2.0. NVIDIA model weights, NVIDIA dataset files, videos, generated embeddings, and Milvus volumes containing generated embeddings are not redistributed by this project.
 
@@ -20,15 +22,16 @@ The repository code is licensed under Apache-2.0. NVIDIA model weights, NVIDIA d
 
 | Requirement | Purpose |
 | --- | --- |
-| Linux workstation | The scripts use local absolute paths and Docker. |
+| Linux workstation | The scripts use local paths, Docker, and CUDA tooling. |
 | NVIDIA GPU with CUDA | Cosmos embedding inference. |
-| 1 or more GPUs | The orchestrator shards work across `GPU_IDS`. |
 | Docker | Runs standalone Milvus. |
-| `uv` | Creates the Python environment and installs packages. |
-| Python 3.10 | Current tested environment for the main `.venv`. |
+| `uv` | Creates Python environments and installs packages. |
+| Python 3.10 | Main backend / embedding environment. |
+| Python 3.12 | `physical-ai-av` downloader environment. |
 | Hugging Face access | Downloads dataset zips and loads `nvidia/Cosmos-Embed1-448p`. |
+| `ffmpeg` / `ffprobe` with NVENC | Downloads and serves browser-playable H.264 MP4s. |
 | `/mnt/ramcds` with about 64 GB | Temporary zip/download/extract workspace. |
-| Disk space | Stores Parquet embeddings and Milvus volume data. |
+| Milvus disk space | Stores the vector database under `database/volumes/`. |
 
 Runtime services:
 
@@ -37,40 +40,43 @@ Runtime services:
 | Milvus standalone | `19530` | Vector database API. |
 | Milvus health | `9091` | Container health check. |
 | Embedded etcd | `2379` | Milvus internal metadata. |
-| Flask backend | `5000` | Text embedding and Milvus search API. |
-| Static web viewer | `8000` | Browser UI. |
+| Flask backend/viewer | `5000` | API, web UI, and local MP4 serving. |
 
 ## Install
 
 ```bash
 cd /home/cavadalab/Documents/scsv/covision/cosmos_cds
+
 uv venv --python 3.10
 uv pip install flask pymilvus pyarrow rich tqdm numpy transformers accelerate huggingface-hub decord torch
+
+uv venv --python 3.12 backend/.venv
+uv pip install --python backend/.venv/bin/python physical-ai-av==0.2.2 tqdm
 ```
 
-If the dataset/model are not already cached:
+Login if the model or dataset are not already cached:
 
 ```bash
 .venv/bin/huggingface-cli login
 ```
 
-The backend currently uses `LOCAL_FILES_ONLY = True`, so `nvidia/Cosmos-Embed1-448p` must already be present in the Hugging Face cache before backend startup.
+`backend/app.py` uses `LOCAL_FILES_ONLY = True`, so `nvidia/Cosmos-Embed1-448p` must already exist in the Hugging Face cache before backend startup.
 
-## Components
+## Structure
 
 | Path | Purpose |
 | --- | --- |
-| `buffered_pipeline/downloader.py` | Downloads zips from `nvidia/PhysicalAI-Autonomous-Vehicles`, extracts only `.mp4`, deletes zips, and writes `/mnt/ramcds/processed.json`. |
+| `buffered_pipeline/downloader.py` | Downloads NVIDIA PhysicalAI AV zips, extracts only `.mp4`, deletes zips, and writes `/mnt/ramcds/processed.json`. |
 | `buffered_pipeline/embedder.py` | Embeds extracted videos with `nvidia/Cosmos-Embed1-448p`. |
 | `buffered_pipeline/orchestrator.py` | Streams download/extract/embed with multiple download workers and one embedder process per GPU. |
-| `buffered_pipeline/bench_orchestrator.py` | Benchmarks a small run. |
-| `buffered_pipeline/merge_448_embeddings.py` | Merges existing 448p Parquet outputs. |
+| `buffered_pipeline/merge_448_embeddings.py` | Merges 448p Parquet outputs. |
+| `run.sh` | Starts Milvus if needed, then starts the backend/viewer if needed. |
+| `database/compose.yaml` | Docker Compose config for standalone Milvus. |
 | `database/standalone_embed.sh` | Starts/stops/deletes standalone Milvus in Docker. |
-| `database/create_collection.py` | Creates an empty Milvus collection. |
 | `database/ingest.py` | Drops existing collections after confirmation, creates `cosmos_cds_test_00`, and ingests the merged Parquet file. |
-| `backend/app.py` | Flask API that embeds text queries and searches Milvus. |
-| `web_viewer/` | Static UI calling `http://127.0.0.1:5000/search`; can download the returned video-path list as JSON. |
-| `backend/download_video_list.py` | Downloads result paths and videos into the shared dataset folder. |
+| `backend/app.py` | Unified Flask app: serves `/viewer/`, embeds queries, searches Milvus, starts downloads, serves MP4s. |
+| `backend/download_video_list.py` | Worker script used by `/download`; extracts result clips through `physical-ai-av` and transcodes them. |
+| `web_viewer/` | Browser UI assets served by `backend/app.py`. |
 
 ## Generated Data
 
@@ -81,15 +87,16 @@ These paths are generated and should not be committed:
 | `/mnt/ramcds` | Temporary zip and extraction workspace. |
 | `buffered_pipeline/data/` | Parquet embeddings, reports, shards, logs. |
 | `database/volumes/` | Docker Milvus persistent data. |
-| `buffered_pipeline/test_embeddings/videos*/` | Local test clips. |
-| `buffered_pipeline/test_embeddings/embeddings/` | Local test embedding outputs. |
-| `/data0/sebastian.cavada/datasets/cosmos-cds/data/` | Downloaded query JSON files and videos grouped by query. |
+| `buffered_pipeline/test_embeddings/` | Local test clips, reports, and test embeddings. |
+| `/data0/sebastian.cavada/datasets/cosmos-cds/data/` | Downloaded query manifests plus shared clips in `clips/`. |
+| `/tmp/cosmos_cds_download_requests/` | Backend download job request/progress files. |
+| `/tmp/cosmos_cds_video_queries/` | Uploaded video-query files. |
 
 Generated embeddings from gated or restricted datasets should stay local unless the dataset owner explicitly permits redistribution.
 
 ## Build Embeddings
 
-Prepare the temp workspace:
+Prepare temp storage:
 
 ```bash
 sudo mkdir -p /mnt/ramcds
@@ -114,7 +121,7 @@ cd /home/cavadalab/Documents/scsv/covision/cosmos_cds/buffered_pipeline
 ../.venv/bin/python orchestrator.py
 ```
 
-The current full merged 448p embedding artifact expected by ingest is:
+The current merged 448p embedding artifact expected by ingest is:
 
 ```text
 buffered_pipeline/data/embeddings_0000_3145.448.parquet
@@ -143,7 +150,7 @@ bash standalone_embed.sh delete
 
 ## Ingest
 
-`database/ingest.py` is destructive by design: it asks for `DELETE`, drops all existing Milvus collections, creates `cosmos_cds_test_00`, and inserts the Parquet embeddings.
+`database/ingest.py` is destructive by design: it asks for `DELETE`, drops all existing Milvus collections, creates `cosmos_cds_test_00`, and inserts the configured Parquet embeddings.
 
 ```bash
 cd /home/cavadalab/Documents/scsv/covision/cosmos_cds/database
@@ -160,57 +167,65 @@ Milvus collection settings:
 | Metric | `COSINE` |
 | Output fields | `video_path`, `chunk` |
 
-## Start Backend
+## Run App
+
+Start the unified backend/viewer:
 
 ```bash
 cd /home/cavadalab/Documents/scsv/covision/cosmos_cds
-bash backend/run.sh
+./run.sh
 ```
+
+`run.sh` starts Milvus through Docker Compose when needed, then starts the Flask backend in the foreground.
+
+Open:
+
+```text
+http://127.0.0.1:5000/viewer/
+```
+
+The viewer supports:
+
+| Action | Meaning |
+| --- | --- |
+| Word query | Embeds text and searches Milvus. |
+| Video query | Uploads a local video, embeds it, and searches Milvus. |
+| Download data | Saves query manifests under `data/{query}/` and deduplicated MP4s under `data/clips/`. |
+| History | Lists previously downloaded query folders and re-runs them. |
+| Copy path | Copies the displayed local or source video path from a result card. |
+| Video playback | Serves downloaded clips through `/video/{query}/{clip_id}.mp4`. |
 
 API:
 
 | Endpoint | Meaning |
 | --- | --- |
 | `GET /health` | Backend status. |
-| `GET /search?word=stroller&quantity=5` | Text-to-video search. |
-| `POST /download` | Saves `{query}_paths.json` and native MP4s under `/data0/sebastian.cavada/datasets/cosmos-cds/data/{query}/`. |
-
-## Start Web Viewer
-
-```bash
-cd /home/cavadalab/Documents/scsv/covision/cosmos_cds/web_viewer
-python3 -m http.server 8000
-```
-
-Open:
-
-```text
-http://127.0.0.1:8000
-```
-
-Run a query, then click `Download data` to save the returned video paths and native MP4s on the backend. Downloaded results render as playable videos in the result grid.
+| `GET /viewer/` | Web UI. |
+| `GET /history` | Downloaded query folders. |
+| `DELETE /history/<query_name>` | Deletes one query manifest and prunes unreferenced shared clips. |
+| `GET /search?word=pickup&quantity=5` | Text-to-video search. |
+| `POST /search_video` | Video-to-video search. |
+| `POST /download` | Starts a background clip download job. |
+| `GET /download/<job_id>` | Polls download job progress. |
+| `GET /video/<query_name>/<filename>` | Serves a downloaded MP4. |
 
 ## Normal Startup
 
 If embeddings are already loaded into Milvus:
 
 ```bash
-cd /home/cavadalab/Documents/scsv/covision/cosmos_cds/database
-bash standalone_embed.sh start
-
 cd /home/cavadalab/Documents/scsv/covision/cosmos_cds
-bash backend/run.sh
-
-cd /home/cavadalab/Documents/scsv/covision/cosmos_cds/web_viewer
-python3 -m http.server 8000
+./run.sh
 ```
+
+Then open `http://127.0.0.1:5000/viewer/`.
 
 ## Known Limitations
 
 - Scripts use hardcoded local paths and constants rather than CLI arguments.
-- `backend/app.py` loads one text embedding model on startup and expects Milvus to already contain the collection.
-- `database/standalone_embed.sh` uses `sudo docker`.
-- `database/test_curl.sh` is an old direct-Milvus REST example and is not the main search test path.
+- `backend/app.py` loads one Cosmos model on startup and expects Milvus to already contain the collection.
+- `/download` needs `backend/.venv` with `physical-ai-av` and working NVIDIA dataset access.
+- MP4 download/transcode expects `ffmpeg`, `ffprobe`, and NVENC support.
 - The repository does not yet include a `pyproject.toml` or pinned lockfile.
 
 ## License
