@@ -41,13 +41,9 @@ WEB_VIEWER_DIR = Path(__file__).resolve().parent.parent / "web_viewer"
 DATA_DIR = Path("/data0/sebastian.cavada/datasets/cosmos-cds/data")
 VIDEO_QUERY_DIR = Path("/tmp/cosmos_cds_video_queries")
 PATHS_SUFFIX = "_paths.json"
-VIDEO_CODEC = "h264"
-VIDEO_ENCODER = "h264_nvenc"
 NUM_FRAMES = 8
 DECODE_RESOLUTION = 448
 DOWNLOAD_JOBS: dict[str, dict[str, Any]] = {}
-VIDEO_LOCKS: dict[Path, threading.Lock] = {}
-BROWSER_VIDEOS: set[Path] = set()
 
 
 def seed_everything() -> None:
@@ -83,34 +79,23 @@ def embed_text(text: str) -> list[float]:
     return output.text_proj.float().cpu().numpy()[0].tolist()
 
 
-def parse_request() -> tuple[str, int]:
-    payload = request.get_json(silent=True) or {}
-    word = payload.get("word") or payload.get("query") or request.args.get("word") or request.args.get("query")
-    quantity = parse_quantity(payload)
-    assert isinstance(word, str) and word.strip()
-    return word.strip(), quantity
-
-
-def parse_quantity(payload: dict[str, Any] | None = None) -> int:
-    payload = payload or request.get_json(silent=True) or {}
-    quantity = int(
-        payload.get("quantity")
-        or payload.get("top_k")
-        or request.form.get("quantity")
-        or request.form.get("top_k")
-        or request.args.get("quantity")
-        or request.args.get("top_k")
-        or DEFAULT_QUANTITY
-    )
+def parse_quantity(value: Any = DEFAULT_QUANTITY) -> int:
+    quantity = int(value)
     assert 0 < quantity <= MAX_QUANTITY
     return quantity
+
+
+def search_request() -> tuple[str, int]:
+    word = request.args["word"].strip()
+    assert word
+    return word, parse_quantity(request.args.get("quantity", DEFAULT_QUANTITY))
 
 
 def clean_hit(hit: dict[str, Any]) -> dict[str, Any]:
     entity = hit.get("entity", {})
     video_path = entity["video_path"]
     return {
-        "id": hit["id"],
+        "id": str(hit["id"]),
         "score": hit["distance"],
         "clip_id": strip_video_id(video_path),
         "video_path": video_path,
@@ -137,13 +122,6 @@ def video_query_word(filename: str) -> str:
 
 def save_uploaded_video() -> tuple[Path, str]:
     VIDEO_QUERY_DIR.mkdir(parents=True, exist_ok=True)
-    payload = request.get_json(silent=True) or {}
-    video_path = payload.get("video_path") or request.form.get("video_path")
-    if video_path:
-        path = Path(video_path)
-        assert path.exists()
-        return path, video_query_word(path.name)
-
     video = request.files["video"]
     suffix = Path(video.filename).suffix or ".mp4"
     path = VIDEO_QUERY_DIR / f"{uuid.uuid4().hex}{suffix}"
@@ -157,61 +135,6 @@ def load_video(path: Path) -> np.ndarray:
     frame_ids = np.linspace(0, len(reader) - 1, NUM_FRAMES, dtype=int).tolist()
     frames = reader.get_batch(frame_ids).asnumpy()
     return np.transpose(np.expand_dims(frames, 0), (0, 1, 4, 2, 3))
-
-
-def video_codec(path: Path) -> str:
-    return subprocess.check_output(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
-        text=True,
-    ).strip()
-
-
-def transcode_video(path: Path) -> None:
-    tmp_path = path.with_suffix(".tmp.mp4")
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-nostdin",
-            "-y",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            str(path),
-            "-map",
-            "0:v:0",
-            "-an",
-            "-c:v",
-            VIDEO_ENCODER,
-            "-preset",
-            "p4",
-            "-cq",
-            "20",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            str(tmp_path),
-        ],
-        check=True,
-    )
-    tmp_path.replace(path)
-
-
-def ensure_browser_video(path: Path) -> Path:
-    if path in BROWSER_VIDEOS:
-        return path
-
-    if video_codec(path) == VIDEO_CODEC:
-        BROWSER_VIDEOS.add(path)
-        return path
-
-    lock = VIDEO_LOCKS.setdefault(path, threading.Lock())
-    with lock:
-        if video_codec(path) != VIDEO_CODEC:
-            transcode_video(path)
-        BROWSER_VIDEOS.add(path)
-    return path
 
 
 def search_results(word: str, quantity: int) -> list[dict[str, Any]]:
@@ -309,14 +232,12 @@ def local_video_rows(results: list[dict[str, Any]]) -> list[dict[str, str]]:
     return rows
 
 
-def parse_overwrite() -> bool:
-    payload = request.get_json(silent=True) or {}
-    value = payload.get("overwrite") or request.args.get("overwrite") or False
+def parse_overwrite(payload: dict[str, Any]) -> bool:
+    value = payload.get("overwrite", False)
     return str(value).strip().lower() in ("1", "true", "y", "yes")
 
 
-def parse_result_paths() -> list[str]:
-    payload = request.get_json(silent=True) or {}
+def result_paths(payload: dict[str, Any]) -> list[str]:
     results = payload.get("results") or []
     return [result["video_path"] for result in results]
 
@@ -417,20 +338,11 @@ def get_video_rows(word: str, paths: list[str], existing_only: bool = False) -> 
     return rows
 
 
-APP = Flask(__name__)
+APP = Flask(__name__, static_folder=str(WEB_VIEWER_DIR), static_url_path="/viewer")
 seed_everything()
 PROCESSOR, MODEL = load_processor_model()
 CLIENT = MilvusClient(uri=MILVUS_URI, token=MILVUS_TOKEN)
 CLIENT.load_collection(COLLECTION_NAME)
-
-
-@APP.after_request
-def add_cors(response: Response) -> Response:
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Range"
-    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    response.headers["Access-Control-Expose-Headers"] = "Accept-Ranges, Content-Length, Content-Range"
-    return response
 
 
 @APP.route("/health", methods=["GET"])
@@ -448,24 +360,14 @@ def viewer() -> Response:
     return send_file(WEB_VIEWER_DIR / "index.html")
 
 
-@APP.route("/viewer/<path:filename>", methods=["GET"])
-def viewer_asset(filename: str) -> Response:
-    path = WEB_VIEWER_DIR / filename
-    assert path.exists()
-    return send_file(path)
-
-
 @APP.route("/history", methods=["GET"])
 def history() -> Response:
     return jsonify({"data_dir": str(DATA_DIR), "queries": query_history()})
 
 
-@APP.route("/search", methods=["GET", "POST", "OPTIONS"])
+@APP.route("/search", methods=["GET"])
 def search() -> Response:
-    if request.method == "OPTIONS":
-        return jsonify({})
-
-    word, quantity = parse_request()
+    word, quantity = search_request()
     results = search_results(word, quantity)
     results = attach_video_urls(word, results, existing_only=True)
     paths = [result["video_path"] for result in results]
@@ -481,12 +383,9 @@ def search() -> Response:
     )
 
 
-@APP.route("/search_video", methods=["POST", "OPTIONS"])
+@APP.route("/search_video", methods=["POST"])
 def search_video() -> Response:
-    if request.method == "OPTIONS":
-        return jsonify({})
-
-    quantity = parse_quantity()
+    quantity = parse_quantity(request.form.get("quantity", DEFAULT_QUANTITY))
     video_path, word = save_uploaded_video()
     results = attach_local_video_urls(search_vector(embed_video(video_path), quantity))
     return jsonify(
@@ -504,16 +403,15 @@ def search_video() -> Response:
     )
 
 
-@APP.route("/download", methods=["GET", "POST", "OPTIONS"])
+@APP.route("/download", methods=["POST"])
 def download() -> Response:
-    if request.method == "OPTIONS":
-        return jsonify({})
-
-    word, quantity = parse_request()
-    paths = parse_result_paths()
+    payload = request.get_json()
+    word = payload["word"].strip()
+    quantity = parse_quantity(payload.get("quantity", DEFAULT_QUANTITY))
+    paths = result_paths(payload)
     if not paths:
         paths = [result["video_path"] for result in search_results(word, quantity)]
-    job = start_download_job(word, paths, overwrite=parse_overwrite())
+    job = start_download_job(word, paths, overwrite=parse_overwrite(payload))
     return jsonify({"quantity": quantity, **job}), 202
 
 
@@ -529,7 +427,7 @@ def video(query_name: str, filename: str) -> Response:
     assert filename.endswith(".mp4") and "/" not in filename
     path = DATA_DIR / query_name / filename
     assert path.exists(), f"Missing {path}"
-    return send_file(ensure_browser_video(path), mimetype="video/mp4", conditional=True)
+    return send_file(path, mimetype="video/mp4", conditional=True)
 
 
 if __name__ == "__main__":

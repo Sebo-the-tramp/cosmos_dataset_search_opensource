@@ -1,9 +1,7 @@
-const API_HOST = ["127.0.0.1", "localhost"].includes(window.location.hostname) ? window.location.hostname : "127.0.0.1";
-const API_ORIGIN = window.location.port === "5000" ? "" : `http://${API_HOST}:5000`;
-const API_URL = `${API_ORIGIN}/search`;
-const SEARCH_VIDEO_URL = `${API_ORIGIN}/search_video`;
-const DOWNLOAD_URL = `${API_ORIGIN}/download`;
-const HISTORY_URL = `${API_ORIGIN}/history`;
+const API_URL = "/search";
+const SEARCH_VIDEO_URL = "/search_video";
+const DOWNLOAD_URL = "/download";
+const HISTORY_URL = "/history";
 const FORM = document.querySelector("#search-form");
 const VIDEO_FORM = document.querySelector("#video-search-form");
 const QUERY = document.querySelector("#query");
@@ -26,20 +24,16 @@ function assert(condition) {
 }
 
 function buildSearchUrl(word, quantity) {
-  const url = new URL(API_URL);
+  const url = new URL(API_URL, window.location.origin);
   url.searchParams.set("word", word);
   url.searchParams.set("quantity", String(quantity));
   return url;
 }
 
-function parsePayload(text) {
-  return JSON.parse(text.replace(/([:[,]\s*)(-?\d{16,})(?=[,\]}])/g, '$1"$2"'));
-}
-
 async function requestJson(url, options) {
   const response = await fetch(url, options);
   assert(response.ok);
-  return parsePayload(await response.text());
+  return response.json();
 }
 
 async function search(word, quantity) {
@@ -238,16 +232,6 @@ HISTORY.addEventListener("click", (event) => {
   QUERY.value = button.dataset.word;
   TOP_K.value = button.dataset.quantity;
   FORM.requestSubmit();
-});
-
-RESULTS.addEventListener("click", (event) => {
-  const button = event.target.closest(".rating button");
-  if (!button) {
-    return;
-  }
-
-  button.parentElement.querySelectorAll("button").forEach((item) => item.classList.remove("active"));
-  button.classList.add("active");
 });
 
 loadHistory();
