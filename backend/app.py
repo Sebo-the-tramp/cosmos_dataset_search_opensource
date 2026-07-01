@@ -1,5 +1,6 @@
 import os
 import random
+import shutil
 import subprocess
 import threading
 import uuid
@@ -26,10 +27,15 @@ MILVUS_URI = "http://127.0.0.1:19530"
 MILVUS_TOKEN = "root:Milvus"
 COLLECTION_NAME = "cosmos_cds_test_00"
 VECTOR_FIELD = "embedding"
-OUTPUT_FIELDS = ["video_path", "chunk"]
+BASE_OUTPUT_FIELDS = ["video_path", "chunk"]
+METADATA_FIELDS = ["country", "month", "hour_of_day", "platform_class", "radar_config"]
+FILTER_FIELDS = ["clip_id", *METADATA_FIELDS]
+OUTPUT_FIELDS = BASE_OUTPUT_FIELDS
 DEFAULT_QUANTITY = 10
 MAX_QUANTITY = 1000
 REMOVED_IDS = {467240255860630002}
+APPLY_METADATA_FILTER = True
+METADATA_OPERATORS = {"in", "==", "!=", ">", ">=", "<", "<="}
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.bfloat16 if DEVICE.startswith("cuda") else torch.float32
 LOCAL_FILES_ONLY = True
@@ -39,11 +45,14 @@ DOWNLOAD_SCRIPT = BACKEND_DIR / "download_video_list.py"
 DOWNLOAD_REQUEST_DIR = Path("/tmp/cosmos_cds_download_requests")
 WEB_VIEWER_DIR = Path(__file__).resolve().parent.parent / "web_viewer"
 DATA_DIR = Path("/data0/sebastian.cavada/datasets/cosmos-cds/data")
+CLIP_DIR = DATA_DIR / "clips"
 VIDEO_QUERY_DIR = Path("/tmp/cosmos_cds_video_queries")
 PATHS_SUFFIX = "_paths.json"
 NUM_FRAMES = 8
 DECODE_RESOLUTION = 448
 DOWNLOAD_JOBS: dict[str, dict[str, Any]] = {}
+ACTIVE_METADATA_FIELDS: list[str] = []
+ACTIVE_FILTER_FIELDS: set[str] = set()
 
 
 def seed_everything() -> None:
@@ -85,22 +94,49 @@ def parse_quantity(value: Any = DEFAULT_QUANTITY) -> int:
     return quantity
 
 
-def search_request() -> tuple[str, int]:
+def clean_metadata_filter(value: Any) -> dict[str, Any] | None:
+    if value in (None, ""):
+        return None
+
+    metadata_filter = json.loads(value) if isinstance(value, str) else value
+    assert isinstance(metadata_filter, dict)
+    assert isinstance(metadata_filter["field"], str) and metadata_filter["field"].replace("_", "").replace(".", "").isalnum()
+    assert metadata_filter["field"] in FILTER_FIELDS
+    assert metadata_filter["operator"] in METADATA_OPERATORS
+    assert "value" in metadata_filter
+    return metadata_filter
+
+
+def milvus_filter_expr(metadata_filter: dict[str, Any]) -> str:
+    field = metadata_filter["field"]
+    operator = metadata_filter["operator"]
+    value = metadata_filter["value"]
+    if operator == "in":
+        assert isinstance(value, list)
+        return f"{field} in {json.dumps(value)}"
+    return f"{field} {operator} {json.dumps(value)}"
+
+
+def search_request() -> tuple[str, int, dict[str, Any] | None]:
     word = request.args["word"].strip()
     assert word
-    return word, parse_quantity(request.args.get("quantity", DEFAULT_QUANTITY))
+    return word, parse_quantity(request.args.get("quantity", DEFAULT_QUANTITY)), clean_metadata_filter(request.args.get("metadata_filter"))
 
 
 def clean_hit(hit: dict[str, Any]) -> dict[str, Any]:
     entity = hit.get("entity", {})
     video_path = entity["video_path"]
-    return {
+    metadata = {field: entity[field] for field in ACTIVE_METADATA_FIELDS if field in entity}
+    row = {
         "id": str(hit["id"]),
         "score": hit["distance"],
         "clip_id": strip_video_id(video_path),
         "video_path": video_path,
         "chunk": entity["chunk"],
     }
+    if metadata:
+        row["metadata"] = metadata
+    return row
 
 
 def query_name_from_word(word: str) -> str:
@@ -113,6 +149,10 @@ def strip_video_id(path: str) -> str:
 
 def served_video_url(query_name: str, clip_id: str) -> str:
     return f"{request.host_url.rstrip('/')}/video/{query_name}/{clip_id}.mp4"
+
+
+def clip_path(clip_id: str) -> Path:
+    return CLIP_DIR / f"{clip_id}.mp4"
 
 
 def video_query_word(filename: str) -> str:
@@ -137,21 +177,48 @@ def load_video(path: Path) -> np.ndarray:
     return np.transpose(np.expand_dims(frames, 0), (0, 1, 4, 2, 3))
 
 
-def search_results(word: str, quantity: int) -> list[dict[str, Any]]:
-    return search_vector(embed_text(word), quantity)
+def search_results(word: str, quantity: int, metadata_filter: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    return search_vector(embed_text(word), quantity, metadata_filter)
 
 
-def search_vector(embedding: list[float], quantity: int) -> list[dict[str, Any]]:
+def search_vector(embedding: list[float], quantity: int, metadata_filter: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     limit = min(quantity + len(REMOVED_IDS), MAX_QUANTITY)
+    search_kwargs = {}
+    if is_metadata_filter_applied(metadata_filter):
+        search_kwargs["filter"] = milvus_filter_expr(metadata_filter)
     hits = CLIENT.search(
         collection_name=COLLECTION_NAME,
         data=[embedding],
         anns_field=VECTOR_FIELD,
         limit=limit,
         output_fields=OUTPUT_FIELDS,
+        **search_kwargs,
     )[0]
     rows = [clean_hit(hit) for hit in hits if int(hit["id"]) not in REMOVED_IDS]
     return rows[:quantity]
+
+
+def is_metadata_filter_applied(metadata_filter: dict[str, Any] | None) -> bool:
+    return APPLY_METADATA_FILTER and metadata_filter is not None and metadata_filter["field"] in ACTIVE_FILTER_FIELDS
+
+
+def metadata_status() -> dict[str, Any]:
+    return {
+        "configured_metadata_fields": METADATA_FIELDS,
+        "configured_filter_fields": FILTER_FIELDS,
+        "active_metadata_fields": ACTIVE_METADATA_FIELDS,
+        "active_filter_fields": sorted(ACTIVE_FILTER_FIELDS),
+        "metadata_available": bool(ACTIVE_METADATA_FIELDS),
+        "metadata_filter_enabled": APPLY_METADATA_FILTER,
+    }
+
+
+def configure_collection_fields(client: MilvusClient) -> None:
+    global ACTIVE_FILTER_FIELDS, ACTIVE_METADATA_FIELDS, OUTPUT_FIELDS
+    fields = {field["name"] for field in client.describe_collection(COLLECTION_NAME)["fields"]}
+    ACTIVE_METADATA_FIELDS = [field for field in METADATA_FIELDS if field in fields]
+    ACTIVE_FILTER_FIELDS = {field for field in FILTER_FIELDS if field in fields}
+    OUTPUT_FIELDS = [*BASE_OUTPUT_FIELDS, *ACTIVE_METADATA_FIELDS]
 
 
 def embed_video(path: Path) -> list[float]:
@@ -163,20 +230,57 @@ def embed_video(path: Path) -> list[float]:
 
 def query_history() -> list[dict[str, Any]]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    folders = [path for path in DATA_DIR.iterdir() if path.is_dir()]
+    folders = [path for path in DATA_DIR.iterdir() if path.is_dir() and path != CLIP_DIR]
     rows = []
     for folder in sorted(folders, key=lambda path: path.stat().st_mtime, reverse=True):
+        paths_json = folder / f"{folder.name}{PATHS_SUFFIX}"
         rows.append(
             {
                 "query_name": folder.name,
                 "word": folder.name.replace("_", " "),
                 "output_dir": str(folder),
-                "paths_json": str(folder / f"{folder.name}{PATHS_SUFFIX}"),
-                "video_count": len(list(folder.glob("*.mp4"))),
-                "updated_at": folder.stat().st_mtime,
+                "paths_json": str(paths_json),
+                "video_count": query_video_count(folder, paths_json),
+                "updated_at": paths_json.stat().st_mtime if paths_json.exists() else folder.stat().st_mtime,
             }
         )
     return rows
+
+
+def query_video_count(folder: Path, paths_json: Path) -> int:
+    if not paths_json.exists():
+        return len(list(folder.glob("*.mp4")))
+    with open(paths_json) as f:
+        clip_ids = {strip_video_id(path) for path in json.load(f)}
+    return sum((clip_path(clip_id).exists() or (folder / f"{clip_id}.mp4").exists()) for clip_id in clip_ids)
+
+
+def referenced_clip_ids() -> set[str]:
+    ids = set()
+    for folder in DATA_DIR.iterdir():
+        paths_json = folder / f"{folder.name}{PATHS_SUFFIX}"
+        if not folder.is_dir() or folder == CLIP_DIR or not paths_json.exists():
+            continue
+        with open(paths_json) as f:
+            ids.update(strip_video_id(path) for path in json.load(f))
+    return ids
+
+
+def prune_unused_clips() -> None:
+    if not CLIP_DIR.exists():
+        return
+    used = referenced_clip_ids()
+    for path in CLIP_DIR.glob("*.mp4"):
+        if path.stem not in used:
+            path.unlink()
+
+
+def delete_query(query_name: str) -> None:
+    assert query_name and "/" not in query_name
+    path = DATA_DIR / query_name
+    assert path.is_dir()
+    shutil.rmtree(path)
+    prune_unused_clips()
 
 
 def attach_video_urls(word: str, results: list[dict[str, Any]], existing_only: bool) -> list[dict[str, Any]]:
@@ -184,7 +288,7 @@ def attach_video_urls(word: str, results: list[dict[str, Any]], existing_only: b
     rows = []
     for result in results:
         clip_id = strip_video_id(result["video_path"])
-        local_path = DATA_DIR / query_name / f"{clip_id}.mp4"
+        local_path = clip_path(clip_id)
         row = {
             **result,
             "clip_id": clip_id,
@@ -198,7 +302,10 @@ def attach_video_urls(word: str, results: list[dict[str, Any]], existing_only: b
 
 
 def local_video_path(clip_id: str) -> Path | None:
-    matches = sorted(DATA_DIR.glob(f"*/{clip_id}.mp4"), key=lambda path: path.stat().st_mtime, reverse=True)
+    path = clip_path(clip_id)
+    if path.exists():
+        return path
+    matches = sorted(DATA_DIR.glob(f"*/{clip_id}.mp4"), key=lambda item: item.stat().st_mtime, reverse=True)
     return matches[0] if matches else None
 
 
@@ -323,7 +430,7 @@ def get_video_rows(word: str, paths: list[str], existing_only: bool = False) -> 
             continue
         seen.add(clip_id)
         filename = f"{clip_id}.mp4"
-        video_path = DATA_DIR / query_name / filename
+        video_path = clip_path(clip_id)
         if existing_only and not video_path.exists():
             continue
         rows.append(
@@ -343,11 +450,17 @@ seed_everything()
 PROCESSOR, MODEL = load_processor_model()
 CLIENT = MilvusClient(uri=MILVUS_URI, token=MILVUS_TOKEN)
 CLIENT.load_collection(COLLECTION_NAME)
+configure_collection_fields(CLIENT)
 
 
 @APP.route("/health", methods=["GET"])
 def health() -> Response:
-    return jsonify({"ok": True, "collection": COLLECTION_NAME, "device": DEVICE})
+    return jsonify({"ok": True, "collection": COLLECTION_NAME, "device": DEVICE, **metadata_status()})
+
+
+@APP.route("/metadata", methods=["GET"])
+def metadata() -> Response:
+    return jsonify(metadata_status())
 
 
 @APP.route("/", methods=["GET"])
@@ -365,10 +478,16 @@ def history() -> Response:
     return jsonify({"data_dir": str(DATA_DIR), "queries": query_history()})
 
 
+@APP.route("/history/<query_name>", methods=["DELETE"])
+def history_delete(query_name: str) -> Response:
+    delete_query(query_name)
+    return jsonify({"deleted": query_name, "queries": query_history()})
+
+
 @APP.route("/search", methods=["GET"])
 def search() -> Response:
-    word, quantity = search_request()
-    results = search_results(word, quantity)
+    word, quantity, metadata_filter = search_request()
+    results = search_results(word, quantity, metadata_filter)
     results = attach_video_urls(word, results, existing_only=True)
     paths = [result["video_path"] for result in results]
     return jsonify(
@@ -376,6 +495,9 @@ def search() -> Response:
             "collection": COLLECTION_NAME,
             "word": word,
             "quantity": quantity,
+            "metadata_filter": metadata_filter,
+            "metadata_filter_applied": is_metadata_filter_applied(metadata_filter),
+            **metadata_status(),
             "ids": [result["id"] for result in results],
             "results": results,
             "videos": get_video_rows(word, paths, existing_only=True),
@@ -386,8 +508,9 @@ def search() -> Response:
 @APP.route("/search_video", methods=["POST"])
 def search_video() -> Response:
     quantity = parse_quantity(request.form.get("quantity", DEFAULT_QUANTITY))
+    metadata_filter = clean_metadata_filter(request.form.get("metadata_filter"))
     video_path, word = save_uploaded_video()
-    results = attach_local_video_urls(search_vector(embed_video(video_path), quantity))
+    results = attach_local_video_urls(search_vector(embed_video(video_path), quantity, metadata_filter))
     return jsonify(
         {
             "collection": COLLECTION_NAME,
@@ -395,6 +518,9 @@ def search_video() -> Response:
             "word": word,
             "video_query_path": str(video_path),
             "quantity": quantity,
+            "metadata_filter": metadata_filter,
+            "metadata_filter_applied": is_metadata_filter_applied(metadata_filter),
+            **metadata_status(),
             "ids": [result["id"] for result in results],
             "clip_ids": [result["clip_id"] for result in results],
             "results": results,
@@ -408,11 +534,12 @@ def download() -> Response:
     payload = request.get_json()
     word = payload["word"].strip()
     quantity = parse_quantity(payload.get("quantity", DEFAULT_QUANTITY))
+    metadata_filter = clean_metadata_filter(payload.get("metadata_filter"))
     paths = result_paths(payload)
     if not paths:
-        paths = [result["video_path"] for result in search_results(word, quantity)]
+        paths = [result["video_path"] for result in search_results(word, quantity, metadata_filter)]
     job = start_download_job(word, paths, overwrite=parse_overwrite(payload))
-    return jsonify({"quantity": quantity, **job}), 202
+    return jsonify({"quantity": quantity, "metadata_filter": metadata_filter, **job}), 202
 
 
 @APP.route("/download/<job_id>", methods=["GET"])
@@ -425,7 +552,9 @@ def download_status(job_id: str) -> Response:
 def video(query_name: str, filename: str) -> Response:
     assert query_name and "/" not in query_name
     assert filename.endswith(".mp4") and "/" not in filename
-    path = DATA_DIR / query_name / filename
+    path = CLIP_DIR / filename
+    if not path.exists():
+        path = DATA_DIR / query_name / filename
     assert path.exists(), f"Missing {path}"
     return send_file(path, mimetype="video/mp4", conditional=True)
 
