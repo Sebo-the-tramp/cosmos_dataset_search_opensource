@@ -1,4 +1,11 @@
-# Cosmos CDS
+<div align="center">
+  <h1>COSMOS Dataset Search</h1>
+  <h3>Local Cosmos Dataset Search-style video retrieval over NVIDIA PhysicalAI autonomous-driving clips.</h3>
+  <p><sub>Developed during an internship at <strong>CovisionLAB</strong></sub></p>
+</div>
+
+---
+
 
 Local Cosmos Dataset Search-style video retrieval over NVIDIA PhysicalAI autonomous-driving clips.
 
