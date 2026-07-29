@@ -447,10 +447,13 @@ def get_video_rows(word: str, paths: list[str], existing_only: bool = False) -> 
 
 APP = Flask(__name__, static_folder=str(WEB_VIEWER_DIR), static_url_path="/viewer")
 seed_everything()
+print(f"Loading {MODEL_NAME} on {DEVICE}", flush=True)
 PROCESSOR, MODEL = load_processor_model()
+print(f"Loading Milvus collection {COLLECTION_NAME}", flush=True)
 CLIENT = MilvusClient(uri=MILVUS_URI, token=MILVUS_TOKEN)
 CLIENT.load_collection(COLLECTION_NAME)
 configure_collection_fields(CLIENT)
+print(f"Collection {COLLECTION_NAME} ready", flush=True)
 
 
 @APP.route("/health", methods=["GET"])
