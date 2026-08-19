@@ -1,6 +1,6 @@
 services:
   milvus:
-    image: milvusdb/milvus:v3.0-beta
+    image: milvusdb/milvus:v3.0-beta@sha256:0a030f267a16358901c662adac02813027ace9e23bfbe6db66528e4fd1c28168
     container_name: milvus-standalone
     security_opt:
       - seccomp:unconfined

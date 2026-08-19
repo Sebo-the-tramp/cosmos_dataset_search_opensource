@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Cosmos Video Search</title>
-    <link rel="stylesheet" href="styles.css?v=20260701d">
+    <link rel="stylesheet" href="styles.css?v=20260804a">
   </head>
   <body>
     <main class="shell">
@@ -26,6 +26,11 @@
           <label class="field">
             <span>Number of Results</span>
             <input id="top-k" name="top-k" type="number" min="1" step="1" value="5" required>
+          </label>
+
+          <label class="field">
+            <span>Video Output Directory</span>
+            <input id="output-dir" name="output-dir" type="text" placeholder="Leave blank to use the default clips directory" autocomplete="off">
           </label>
 
           <label class="field metadata-filter">
@@ -104,6 +109,6 @@
       </article>
     </template>
 
-    <script src="app.js?v=20260701d"></script>
+    <script src="app.js?v=20260804b"></script>
   </body>
 </html>

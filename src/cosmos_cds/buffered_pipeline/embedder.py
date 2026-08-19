@@ -13,10 +13,12 @@ import torch
 from tqdm import tqdm
 from transformers import AutoModel, AutoProcessor
 
+from cosmos_cds.paths import DATA_DIR, WORK_DIR
+
 SEED = 0
 MODEL_NAME = "nvidia/Cosmos-Embed1-448p"
-VIDEO_DIR = Path("/mnt/ramcds/camera_front_wide_120fov")
-OUTPUT_PATH = Path("/home/cavadalab/Documents/scsv/covision/cosmos_cds/buffered_pipeline/data/embeddings.parquet")
+VIDEO_DIR = WORK_DIR / "camera_front_wide_120fov"
+OUTPUT_PATH = DATA_DIR / "buffered_pipeline" / "embeddings.parquet"
 SCHEMA = pa.schema(
     [
         ("video_path", pa.string()),

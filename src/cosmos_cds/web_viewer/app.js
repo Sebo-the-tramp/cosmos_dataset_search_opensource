@@ -2,10 +2,13 @@ const API_URL = "/search";
 const SEARCH_VIDEO_URL = "/search_video";
 const DOWNLOAD_URL = "/download";
 const HISTORY_URL = "/history";
+const MAX_QUANTITY = 1000;
+const TOO_MANY_QUERIES_MESSAGE = "Too many queries requested.";
 const FORM = document.querySelector("#search-form");
 const VIDEO_FORM = document.querySelector("#video-search-form");
 const QUERY = document.querySelector("#query");
 const TOP_K = document.querySelector("#top-k");
+const OUTPUT_DIR = document.querySelector("#output-dir");
 const METADATA_FILTER = document.querySelector("#metadata-filter");
 const VIDEO_QUERY = document.querySelector("#video-query");
 const SUMMARY = document.querySelector("#summary");
@@ -36,8 +39,25 @@ function buildSearchUrl(word, quantity, metadataFilter) {
 
 async function requestJson(url, options) {
   const response = await fetch(url, options);
-  assert(response.ok);
-  return response.json();
+  const payload = await response.json();
+  if (!response.ok) {
+    SUMMARY.textContent = payload.error;
+    throw new Error(payload.error);
+  }
+  return payload;
+}
+
+function validQuantity(quantity) {
+  assert(Number.isInteger(quantity) && quantity > 0);
+  if (quantity <= MAX_QUANTITY) {
+    return true;
+  }
+  clearResults();
+  LAST_PAYLOAD = null;
+  DOWNLOAD_RESULTS.disabled = true;
+  hideProgress();
+  SUMMARY.textContent = TOO_MANY_QUERIES_MESSAGE;
+  return false;
 }
 
 function readMetadataFilter() {
@@ -81,6 +101,7 @@ function sleep(ms) {
 
 function hideProgress() {
   DOWNLOAD_PROGRESS.hidden = true;
+  DOWNLOAD_PROGRESS_BAR.classList.remove("indeterminate");
   DOWNLOAD_PROGRESS_BAR.style.width = "0%";
   DOWNLOAD_PROGRESS_TEXT.textContent = "";
 }
@@ -98,19 +119,26 @@ function renderProgress(job) {
   const total = Number(job.total || job.video_count || 0);
   const done = Number(job.done || (job.state === "done" ? total : 0));
   const percent = total > 0 ? Math.round((100 * done) / total) : 0;
+  const pending = done === 0 && !["done", "failed"].includes(job.state);
   DOWNLOAD_PROGRESS.hidden = false;
+  DOWNLOAD_PROGRESS_BAR.classList.toggle("indeterminate", pending);
   DOWNLOAD_PROGRESS_BAR.style.width = `${Math.min(percent, 100)}%`;
-  DOWNLOAD_PROGRESS_TEXT.textContent = `${done}/${total} clips`;
+  DOWNLOAD_PROGRESS_TEXT.textContent = job.state === "failed" ? `Failed at ${done}/${total} clips` : `${done}/${total} clips`;
 }
 
 async function pollDownload(job) {
   let current = job;
-  while (current.state !== "done") {
+  while (!["done", "failed"].includes(current.state)) {
     renderProgress(current);
     await sleep(800);
     current = await requestJson(`${DOWNLOAD_URL}/${current.job_id}`);
   }
   renderProgress(current);
+  if (current.state === "failed") {
+    SUMMARY.textContent = current.error;
+    DOWNLOAD_RESULTS.disabled = false;
+    throw new Error(current.error);
+  }
   return current;
 }
 
@@ -212,11 +240,11 @@ function renderResults(payload, videos = []) {
   payload.results.forEach((result) => {
     const card = TEMPLATE.content.cloneNode(true);
     const videoInfo = videoUrls.get(result.video_path) || videoUrls.get(stripVideoId(result.video_path));
-    const videoUrl = result.video_url || (videoInfo && videoInfo.url);
+    const videoUrl = (videoInfo && videoInfo.url) || result.video_url;
     if (videoUrl) {
       renderVideo(card, videoUrl);
     }
-    const path = result.local_video_path || (videoInfo && videoInfo.local_video_path) || result.video_path;
+    const path = (videoInfo && videoInfo.local_video_path) || result.local_video_path || result.video_path;
     card.querySelector(".chunk").textContent = result.chunk;
     card.querySelector(".video-path").textContent = path;
     card.querySelector(".result-id").textContent = `ID ${result.id}`;
@@ -234,10 +262,11 @@ async function downloadResults() {
   const metadataFilter = LAST_PAYLOAD.metadata_filter;
   DOWNLOAD_RESULTS.disabled = true;
   SUMMARY.textContent = `Downloading ${LAST_PAYLOAD.results.length} videos for "${word}"...`;
+  const overwrite = window.confirm("Overwrite existing video files? Select Cancel to keep them.");
   const job = await requestJson(DOWNLOAD_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(LAST_PAYLOAD),
+    body: JSON.stringify({ ...LAST_PAYLOAD, output_dir: OUTPUT_DIR.value.trim(), overwrite }),
   });
   const payload = await pollDownload(job);
   if (LAST_PAYLOAD.mode === "video") {
@@ -258,7 +287,9 @@ FORM.addEventListener("submit", async (event) => {
   const metadataFilter = readMetadataFilter();
 
   assert(word.length > 0);
-  assert(Number.isInteger(quantity) && quantity > 0);
+  if (!validQuantity(quantity)) {
+    return;
+  }
 
   clearResults();
   LAST_PAYLOAD = null;
@@ -275,7 +306,9 @@ VIDEO_FORM.addEventListener("submit", async (event) => {
   const metadataFilter = readMetadataFilter();
 
   assert(file);
-  assert(Number.isInteger(quantity) && quantity > 0);
+  if (!validQuantity(quantity)) {
+    return;
+  }
 
   clearResults();
   LAST_PAYLOAD = null;

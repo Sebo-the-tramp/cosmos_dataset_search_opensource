@@ -9,13 +9,13 @@ from rich.console import Console
 from rich.table import Table
 from tqdm import tqdm
 
+from cosmos_cds.paths import DATA_DIR
+
 URI = "http://127.0.0.1:19530"
 TOKEN = "root:Milvus"
 COLLECTION_NAME = "cosmos_cds_test_00"
-PARQUET_PATH = Path(
-    "/home/cavadalab/Documents/scsv/covision/cosmos_cds/buffered_pipeline/data/embeddings_0000_3145.448.parquet"
-)
-METADATA_PARQUET_PATH = Path("/home/cavadalab/Documents/scsv/covision/cosmos_cds/database/data_collection.parquet")
+PARQUET_PATH = DATA_DIR / "buffered_pipeline" / "embeddings_0000_3145.448.parquet"
+METADATA_PARQUET_PATH = DATA_DIR / "data_collection.parquet"
 BATCH_SIZE = 4096
 VECTOR_FIELD = "embedding"
 VECTOR_DIM = 768
