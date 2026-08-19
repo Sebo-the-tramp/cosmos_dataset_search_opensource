@@ -17,8 +17,8 @@ from rich.table import Table
 from tqdm import tqdm
 from transformers import AutoModel, AutoProcessor
 
-import downloader
-import embedder
+from cosmos_cds.buffered_pipeline import downloader, embedder
+from cosmos_cds.paths import DATA_DIR
 
 START_ZIP = 1_000
 ZIP_LIMIT = 2_146
@@ -33,11 +33,11 @@ KEEP_EXTRACTED = False
 EXTRAPOLATED_VIDEOS = 300_000
 STOP = "__STOP__"
 
-BASE_DIR = Path("/home/cavadalab/Documents/scsv/covision/cosmos_cds/buffered_pipeline")
+BASE_DIR = DATA_DIR / "buffered_pipeline"
 RUN_NAME = f"zips_{START_ZIP:04d}_{ZIP_END - 1:04d}"
-OUTPUT_PATH = BASE_DIR / "data" / f"embeddings_{RUN_NAME}.parquet"
-REPORT_PATH = BASE_DIR / "data" / f"orchestrator_report_{RUN_NAME}.json"
-SHARD_DIR = BASE_DIR / "data" / f"embedding_shards_{RUN_NAME}"
+OUTPUT_PATH = BASE_DIR / f"embeddings_{RUN_NAME}.parquet"
+REPORT_PATH = BASE_DIR / f"orchestrator_report_{RUN_NAME}.json"
+SHARD_DIR = BASE_DIR / f"embedding_shards_{RUN_NAME}"
 
 console = Console()
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT=/home/cavadalab/Documents/scsv/covision/cosmos_cds
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 MILVUS_CONTAINER=milvus-standalone
 MILVUS_HEALTH=http://127.0.0.1:9091/healthz
 BACKEND_HEALTH=http://127.0.0.1:5000/health
@@ -46,8 +46,7 @@ if healthy "$BACKEND_HEALTH"; then
     echo "Backend already running: $VIEWER_URL"
 else
     echo "Starting backend: $VIEWER_URL"
-    cd "$ROOT/backend"
-    "$ROOT/.venv/bin/python" app.py &
+    "$ROOT/.venv/bin/python" -m cosmos_cds.backend.app &
     BACKEND_PID=$!
     trap 'kill "$BACKEND_PID" 2>/dev/null' INT TERM
     for _ in $(seq 1 "$BACKEND_WAIT_SECONDS"); do

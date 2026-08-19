@@ -2,14 +2,16 @@ import os
 import random
 import shutil
 import subprocess
+import sys
 import threading
 import uuid
 import json
 from pathlib import Path
 from typing import Any
 
-os.environ.setdefault("HF_HOME", "/data0/.cache")
-os.environ.setdefault("HF_MODULES_CACHE", "/tmp/cosmos_cds_hf_modules")
+from cosmos_cds.paths import DATA_DIR, TEMP_DIR
+
+os.environ.setdefault("HF_MODULES_CACHE", str(TEMP_DIR / "cosmos_cds_hf_modules"))
 
 import decord
 import numpy as np
@@ -17,6 +19,7 @@ import torch
 from flask import Flask, Response, jsonify, redirect, request, send_file
 from pymilvus import MilvusClient
 from transformers import AutoModel, AutoProcessor
+from werkzeug.exceptions import BadRequest
 
 
 SEED = 0
@@ -32,22 +35,22 @@ METADATA_FIELDS = ["country", "month", "hour_of_day", "platform_class", "radar_c
 FILTER_FIELDS = ["clip_id", *METADATA_FIELDS]
 OUTPUT_FIELDS = BASE_OUTPUT_FIELDS
 DEFAULT_QUANTITY = 10
-MAX_QUANTITY = 1000
+MAX_QUANTITY = 5000
+TOO_MANY_QUERIES_MESSAGE = "Too many queries requested."
 REMOVED_IDS = {467240255860630002}
 APPLY_METADATA_FILTER = True
 METADATA_OPERATORS = {"in", "==", "!=", ">", ">=", "<", "<="}
 DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 DTYPE = torch.bfloat16 if DEVICE.startswith("cuda") else torch.float32
 LOCAL_FILES_ONLY = True
-BACKEND_DIR = Path(__file__).resolve().parent
-DOWNLOAD_PYTHON = str(BACKEND_DIR / ".venv" / "bin" / "python")
-DOWNLOAD_SCRIPT = BACKEND_DIR / "download_video_list.py"
-DOWNLOAD_REQUEST_DIR = Path("/tmp/cosmos_cds_download_requests")
-WEB_VIEWER_DIR = Path(__file__).resolve().parent.parent / "web_viewer"
-DATA_DIR = Path("/data0/sebastian.cavada/datasets/cosmos-cds/data")
+DOWNLOAD_PYTHON = sys.executable
+DOWNLOAD_MODULE = "cosmos_cds.backend.download_video_list"
+DOWNLOAD_REQUEST_DIR = TEMP_DIR / "cosmos_cds_download_requests"
+WEB_VIEWER_DIR = Path(__file__).resolve().parents[1] / "web_viewer"
 CLIP_DIR = DATA_DIR / "clips"
-VIDEO_QUERY_DIR = Path("/tmp/cosmos_cds_video_queries")
+VIDEO_QUERY_DIR = TEMP_DIR / "cosmos_cds_video_queries"
 PATHS_SUFFIX = "_paths.json"
+OUTPUT_DIR_SUFFIX = "_output_dir.txt"
 NUM_FRAMES = 8
 DECODE_RESOLUTION = 448
 DOWNLOAD_JOBS: dict[str, dict[str, Any]] = {}
@@ -90,7 +93,9 @@ def embed_text(text: str) -> list[float]:
 
 def parse_quantity(value: Any = DEFAULT_QUANTITY) -> int:
     quantity = int(value)
-    assert 0 < quantity <= MAX_QUANTITY
+    assert quantity > 0
+    if quantity > MAX_QUANTITY:
+        raise BadRequest(TOO_MANY_QUERIES_MESSAGE)
     return quantity
 
 
@@ -147,8 +152,12 @@ def strip_video_id(path: str) -> str:
     return Path(path).name.split(".")[0].lower()
 
 
-def served_video_url(query_name: str, clip_id: str) -> str:
-    return f"{request.host_url.rstrip('/')}/video/{query_name}/{clip_id}.mp4"
+def served_download_video_url(job_id: str, clip_id: str) -> str:
+    return f"{request.host_url.rstrip('/')}/download/{job_id}/video/{clip_id}.mp4"
+
+
+def served_local_video_url(clip_id: str) -> str:
+    return f"{request.host_url.rstrip('/')}/local-video/{clip_id}.mp4"
 
 
 def clip_path(clip_id: str) -> Path:
@@ -238,7 +247,7 @@ def query_history() -> list[dict[str, Any]]:
             {
                 "query_name": folder.name,
                 "word": folder.name.replace("_", " "),
-                "output_dir": str(folder),
+                "output_dir": str(query_output_dir(folder)),
                 "paths_json": str(paths_json),
                 "video_count": query_video_count(folder, paths_json),
                 "updated_at": paths_json.stat().st_mtime if paths_json.exists() else folder.stat().st_mtime,
@@ -252,7 +261,13 @@ def query_video_count(folder: Path, paths_json: Path) -> int:
         return len(list(folder.glob("*.mp4")))
     with open(paths_json) as f:
         clip_ids = {strip_video_id(path) for path in json.load(f)}
-    return sum((clip_path(clip_id).exists() or (folder / f"{clip_id}.mp4").exists()) for clip_id in clip_ids)
+    output_dir = query_output_dir(folder)
+    return sum(((output_dir / f"{clip_id}.mp4").exists() or (folder / f"{clip_id}.mp4").exists()) for clip_id in clip_ids)
+
+
+def query_output_dir(folder: Path) -> Path:
+    path = folder / f"{folder.name}{OUTPUT_DIR_SUFFIX}"
+    return Path(path.read_text().strip()) if path.exists() else CLIP_DIR
 
 
 def referenced_clip_ids() -> set[str]:
@@ -283,20 +298,20 @@ def delete_query(query_name: str) -> None:
     prune_unused_clips()
 
 
-def attach_video_urls(word: str, results: list[dict[str, Any]], existing_only: bool) -> list[dict[str, Any]]:
-    query_name = query_name_from_word(word)
+def attach_video_urls(results: list[dict[str, Any]], existing_only: bool) -> list[dict[str, Any]]:
     rows = []
     for result in results:
         clip_id = strip_video_id(result["video_path"])
-        local_path = clip_path(clip_id)
+        found_path = local_video_path(clip_id)
+        local_path = found_path or clip_path(clip_id)
         row = {
             **result,
             "clip_id": clip_id,
             "local_video_path": str(local_path),
-            "video_downloaded": local_path.exists(),
+            "video_downloaded": found_path is not None,
         }
-        if local_path.exists() or not existing_only:
-            row["video_url"] = served_video_url(query_name, clip_id)
+        if found_path is not None or not existing_only:
+            row["video_url"] = served_local_video_url(clip_id)
         rows.append(row)
     return rows
 
@@ -305,7 +320,10 @@ def local_video_path(clip_id: str) -> Path | None:
     path = clip_path(clip_id)
     if path.exists():
         return path
-    matches = sorted(DATA_DIR.glob(f"*/{clip_id}.mp4"), key=lambda item: item.stat().st_mtime, reverse=True)
+    folders = sorted(DATA_DIR.glob("*"), key=lambda item: item.stat().st_mtime, reverse=True)
+    matches = [query_output_dir(folder) / f"{clip_id}.mp4" for folder in folders if folder.is_dir() and folder != CLIP_DIR]
+    matches.extend(DATA_DIR.glob(f"*/{clip_id}.mp4"))
+    matches = [path for path in matches if path.exists()]
     return matches[0] if matches else None
 
 
@@ -316,7 +334,7 @@ def attach_local_video_urls(results: list[dict[str, Any]]) -> list[dict[str, Any
         row = {**result, "video_downloaded": path is not None}
         if path is not None:
             row["local_video_path"] = str(path)
-            row["video_url"] = served_video_url(path.parent.name, result["clip_id"])
+            row["video_url"] = served_local_video_url(result["clip_id"])
         rows.append(row)
     return rows
 
@@ -333,7 +351,7 @@ def local_video_rows(results: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "filename": path.name,
                 "local_video_path": str(path),
                 "video_path": result["video_path"],
-                "url": served_video_url(path.parent.name, result["clip_id"]),
+                "url": served_local_video_url(result["clip_id"]),
             }
         )
     return rows
@@ -342,6 +360,11 @@ def local_video_rows(results: list[dict[str, Any]]) -> list[dict[str, str]]:
 def parse_overwrite(payload: dict[str, Any]) -> bool:
     value = payload.get("overwrite", False)
     return str(value).strip().lower() in ("1", "true", "y", "yes")
+
+
+def parse_output_dir(payload: dict[str, Any]) -> Path:
+    value = str(payload.get("output_dir", "")).strip()
+    return Path(value).expanduser().resolve() if value else CLIP_DIR
 
 
 def result_paths(payload: dict[str, Any]) -> list[str]:
@@ -357,6 +380,7 @@ def run_download_job(
     progress_path: Path,
     videos: list[dict[str, str]],
     total: int,
+    output_dir: Path,
 ) -> None:
     DOWNLOAD_JOBS[job_id] = {
         "job_id": job_id,
@@ -366,31 +390,41 @@ def run_download_job(
         "total": total,
         "written": 0,
         "skipped": 0,
+        "output_dir": str(output_dir),
+        "videos": videos,
     }
 
     env = os.environ.copy()
     env["COSMOS_CDS_DOWNLOAD_REQUEST"] = str(request_path)
     env["COSMOS_CDS_DOWNLOAD_PROGRESS"] = str(progress_path)
     result = subprocess.run(
-        [DOWNLOAD_PYTHON, str(DOWNLOAD_SCRIPT)],
-        check=True,
+        [DOWNLOAD_PYTHON, "-m", DOWNLOAD_MODULE],
+        check=False,
         capture_output=True,
         text=True,
         env=env,
     )
+    if result.returncode:
+        error = result.stderr.strip()
+        DOWNLOAD_JOBS[job_id] = {
+            **DOWNLOAD_JOBS[job_id],
+            "state": "failed",
+            "error": error.splitlines()[-1] if error else "Download failed.",
+        }
+        return
     info = json.loads(result.stdout.strip().splitlines()[-1])
     DOWNLOAD_JOBS[job_id] = {"job_id": job_id, "state": "done", "word": word, "done": total, "total": total, "videos": videos, **info}
 
 
-def start_download_job(word: str, paths: list[str], overwrite: bool) -> dict[str, Any]:
+def start_download_job(word: str, paths: list[str], overwrite: bool, output_dir: Path) -> dict[str, Any]:
     DOWNLOAD_REQUEST_DIR.mkdir(parents=True, exist_ok=True)
     job_id = uuid.uuid4().hex
     request_path = DOWNLOAD_REQUEST_DIR / f"{job_id}.json"
     progress_path = DOWNLOAD_REQUEST_DIR / f"{job_id}.progress.json"
     with open(request_path, "w") as f:
-        json.dump({"word": word, "paths": paths, "overwrite": overwrite}, f)
+        json.dump({"word": word, "paths": paths, "overwrite": overwrite, "output_dir": str(output_dir)}, f)
 
-    videos = get_video_rows(word, paths)
+    videos = get_video_rows(paths, output_dir=output_dir, job_id=job_id)
     DOWNLOAD_JOBS[job_id] = {
         "job_id": job_id,
         "state": "queued",
@@ -399,10 +433,12 @@ def start_download_job(word: str, paths: list[str], overwrite: bool) -> dict[str
         "total": len(paths),
         "written": 0,
         "skipped": 0,
+        "output_dir": str(output_dir),
+        "videos": videos,
     }
     thread = threading.Thread(
         target=run_download_job,
-        args=(job_id, word, overwrite, request_path, progress_path, videos, len(paths)),
+        args=(job_id, word, overwrite, request_path, progress_path, videos, len(paths), output_dir),
         daemon=True,
     )
     thread.start()
@@ -420,8 +456,12 @@ def get_download_job(job_id: str) -> dict[str, Any]:
     return job
 
 
-def get_video_rows(word: str, paths: list[str], existing_only: bool = False) -> list[dict[str, str]]:
-    query_name = query_name_from_word(word)
+def get_video_rows(
+    paths: list[str],
+    existing_only: bool = False,
+    output_dir: Path = CLIP_DIR,
+    job_id: str | None = None,
+) -> list[dict[str, str]]:
     seen = set()
     rows = []
     for path in paths:
@@ -430,7 +470,7 @@ def get_video_rows(word: str, paths: list[str], existing_only: bool = False) -> 
             continue
         seen.add(clip_id)
         filename = f"{clip_id}.mp4"
-        video_path = clip_path(clip_id)
+        video_path = output_dir / filename if job_id else local_video_path(clip_id) or output_dir / filename
         if existing_only and not video_path.exists():
             continue
         rows.append(
@@ -439,7 +479,7 @@ def get_video_rows(word: str, paths: list[str], existing_only: bool = False) -> 
                 "filename": filename,
                 "local_video_path": str(video_path),
                 "video_path": path,
-                "url": served_video_url(query_name, clip_id),
+                "url": served_download_video_url(job_id, clip_id) if job_id else served_local_video_url(clip_id),
             }
         )
     return rows
@@ -454,6 +494,11 @@ CLIENT = MilvusClient(uri=MILVUS_URI, token=MILVUS_TOKEN)
 CLIENT.load_collection(COLLECTION_NAME)
 configure_collection_fields(CLIENT)
 print(f"Collection {COLLECTION_NAME} ready", flush=True)
+
+
+@APP.errorhandler(BadRequest)
+def bad_request(error: BadRequest) -> tuple[Response, int]:
+    return jsonify({"error": error.description}), 400
 
 
 @APP.route("/health", methods=["GET"])
@@ -491,7 +536,7 @@ def history_delete(query_name: str) -> Response:
 def search() -> Response:
     word, quantity, metadata_filter = search_request()
     results = search_results(word, quantity, metadata_filter)
-    results = attach_video_urls(word, results, existing_only=True)
+    results = attach_video_urls(results, existing_only=True)
     paths = [result["video_path"] for result in results]
     return jsonify(
         {
@@ -503,7 +548,7 @@ def search() -> Response:
             **metadata_status(),
             "ids": [result["id"] for result in results],
             "results": results,
-            "videos": get_video_rows(word, paths, existing_only=True),
+            "videos": get_video_rows(paths, existing_only=True),
         }
     )
 
@@ -541,7 +586,7 @@ def download() -> Response:
     paths = result_paths(payload)
     if not paths:
         paths = [result["video_path"] for result in search_results(word, quantity, metadata_filter)]
-    job = start_download_job(word, paths, overwrite=parse_overwrite(payload))
+    job = start_download_job(word, paths, parse_overwrite(payload), parse_output_dir(payload))
     return jsonify({"quantity": quantity, "metadata_filter": metadata_filter, **job}), 202
 
 
@@ -549,6 +594,23 @@ def download() -> Response:
 def download_status(job_id: str) -> Response:
     assert job_id in DOWNLOAD_JOBS
     return jsonify(get_download_job(job_id))
+
+
+@APP.route("/download/<job_id>/video/<filename>", methods=["GET"])
+def downloaded_video(job_id: str, filename: str) -> Response:
+    assert job_id in DOWNLOAD_JOBS
+    assert filename.endswith(".mp4") and "/" not in filename
+    path = Path(DOWNLOAD_JOBS[job_id]["output_dir"]) / filename
+    assert path.exists(), f"Missing {path}"
+    return send_file(path, mimetype="video/mp4", conditional=True)
+
+
+@APP.route("/local-video/<filename>", methods=["GET"])
+def local_video(filename: str) -> Response:
+    assert filename.endswith(".mp4") and "/" not in filename
+    path = local_video_path(Path(filename).stem)
+    assert path is not None, f"Missing {filename}"
+    return send_file(path, mimetype="video/mp4", conditional=True)
 
 
 @APP.route("/video/<query_name>/<filename>", methods=["GET"])

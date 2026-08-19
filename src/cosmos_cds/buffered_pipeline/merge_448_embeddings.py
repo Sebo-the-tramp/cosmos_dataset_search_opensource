@@ -8,7 +8,9 @@ from rich.console import Console
 from rich.table import Table
 from tqdm import tqdm
 
-DATA_DIR = Path("/home/cavadalab/Documents/scsv/covision/cosmos_cds/buffered_pipeline/data")
+from cosmos_cds.paths import DATA_DIR as PROJECT_DATA_DIR
+
+DATA_DIR = PROJECT_DATA_DIR / "buffered_pipeline"
 INPUT_PATHS = [
     DATA_DIR / "embeddings.448.parquet",
     DATA_DIR / "embeddings_zips_1000_3145.parquet",

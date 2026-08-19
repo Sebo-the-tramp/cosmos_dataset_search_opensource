@@ -5,8 +5,9 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from cosmos_cds.paths import PROJECT_ROOT
 
-ROOT = Path(__file__).resolve().parent
+ROOT = PROJECT_ROOT
 CODE_SUFFIXES = {".py", ".js", ".css", ".html", ".sh", ".yaml", ".md"}
 PY_COMPLEXITY_NODES = (
     ast.If,

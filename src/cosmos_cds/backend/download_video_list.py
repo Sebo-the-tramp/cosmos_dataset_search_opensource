@@ -6,16 +6,17 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-os.environ.setdefault("HF_HOME", "/data0/.cache")
-os.environ.setdefault("HF_MODULES_CACHE", "/tmp/cosmos_cds_hf_modules")
+from cosmos_cds.paths import DATA_DIR, TEMP_DIR
+
+os.environ.setdefault("HF_MODULES_CACHE", str(TEMP_DIR / "cosmos_cds_hf_modules"))
 
 import physical_ai_av
 from tqdm import tqdm
 
 
-DATA_DIR = Path("/data0/sebastian.cavada/datasets/cosmos-cds/data")
 CLIP_DIR = DATA_DIR / "clips"
 PATHS_SUFFIX = "_paths.json"
+OUTPUT_DIR_SUFFIX = "_output_dir.txt"
 REQUEST_ENV = "COSMOS_CDS_DOWNLOAD_REQUEST"
 PROGRESS_ENV = "COSMOS_CDS_DOWNLOAD_PROGRESS"
 VIDEO_CODEC = "h264_nvenc"
@@ -50,8 +51,8 @@ def save_paths_json(query_name: str, paths: list[str], output_dir: Path, overwri
     return json_path
 
 
-def clip_path(clip_id: str) -> Path:
-    return CLIP_DIR / f"{clip_id}.mp4"
+def clip_path(clip_id: str, output_dir: Path) -> Path:
+    return output_dir / f"{clip_id}.mp4"
 
 
 def video_codec(path: Path) -> str:
@@ -120,14 +121,15 @@ def write_progress(path: Path | None, payload: dict[str, Any]) -> None:
     tmp_path.replace(path)
 
 
-def download_query(word: str, paths: list[str], overwrite: bool = False) -> dict[str, Any]:
+def download_query(word: str, paths: list[str], overwrite: bool = False, output_dir: Path = CLIP_DIR) -> dict[str, Any]:
     assert paths, "No video paths provided"
     query_name = query_name_from_word(word)
-    output_dir = DATA_DIR / query_name
-    assert output_dir != CLIP_DIR
+    query_dir = DATA_DIR / query_name
+    query_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
-    CLIP_DIR.mkdir(parents=True, exist_ok=True)
-    json_path = save_paths_json(query_name, paths, output_dir, overwrite)
+    json_path = save_paths_json(query_name, paths, query_dir, overwrite)
+    output_dir_path = query_dir / f"{query_name}{OUTPUT_DIR_SUFFIX}"
+    output_dir_path.write_text(str(output_dir))
     progress_path = Path(os.environ[PROGRESS_ENV]) if PROGRESS_ENV in os.environ else None
     seen = set()
     written = 0
@@ -151,7 +153,7 @@ def download_query(word: str, paths: list[str], overwrite: bool = False) -> dict
             )
             continue
         seen.add(clip_id)
-        if write_clip_video(clip_id, clip_path(clip_id), overwrite):
+        if write_clip_video(clip_id, clip_path(clip_id, output_dir), overwrite):
             written += 1
         else:
             skipped += 1
@@ -163,10 +165,11 @@ def download_query(word: str, paths: list[str], overwrite: bool = False) -> dict
 
     result = {
         "query_name": query_name,
-        "query_dir": str(output_dir),
-        "clip_dir": str(CLIP_DIR),
-        "output_dir": str(CLIP_DIR),
+        "query_dir": str(query_dir),
+        "clip_dir": str(output_dir),
+        "output_dir": str(output_dir),
         "paths_json": str(json_path),
+        "output_dir_path": str(output_dir_path),
         "video_count": len(seen),
         "written": written,
         "skipped": skipped,
@@ -179,4 +182,13 @@ if __name__ == "__main__":
     request_path = Path(os.environ[REQUEST_ENV])
     with open(request_path) as f:
         request = json.load(f)
-    print(json.dumps(download_query(request["word"], request["paths"], request["overwrite"])))
+    print(
+        json.dumps(
+            download_query(
+                request["word"],
+                request["paths"],
+                request["overwrite"],
+                Path(request.get("output_dir", CLIP_DIR)),
+            )
+        )
+    )

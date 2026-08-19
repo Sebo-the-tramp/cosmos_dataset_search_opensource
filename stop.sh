@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT=/home/cavadalab/Documents/scsv/covision/cosmos_cds
-BACKEND_PATTERN="$ROOT/.venv/bin/python app.py"
-DOWNLOAD_PATTERN="$ROOT/backend/.venv/bin/python $ROOT/backend/download_video_list.py"
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+BACKEND_PATTERN="$ROOT/.venv/bin/python -m cosmos_cds.backend.app"
+DOWNLOAD_PATTERN="$ROOT/.venv/bin/python -m cosmos_cds.backend.download_video_list"
 WAIT_SECONDS=10
 
 stop_processes() {

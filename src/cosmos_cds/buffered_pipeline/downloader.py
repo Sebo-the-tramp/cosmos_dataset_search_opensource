@@ -11,12 +11,14 @@ from typing import Any
 from huggingface_hub import hf_hub_download, list_repo_tree
 from tqdm import tqdm
 
+from cosmos_cds.paths import WORK_DIR
+
 REPO_ID = "nvidia/PhysicalAI-Autonomous-Vehicles"
 REPO_TYPE = "dataset"
 ZIP_FOLDER = "camera/camera_front_wide_120fov"
 HF_LINK_ZIPS = f"https://huggingface.co/datasets/{REPO_ID}/tree/main/{ZIP_FOLDER}"
 
-DATA_DIR = Path("/mnt/ramcds")
+DATA_DIR = WORK_DIR
 DOWNLOAD_DIR = DATA_DIR / "zips"
 EXTRACT_DIR = DATA_DIR / "camera_front_wide_120fov"
 PROCESSED_METADATA = DATA_DIR / "processed.json"
